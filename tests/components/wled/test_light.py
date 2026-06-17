@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 from syrupy.assertion import SnapshotAssertion
-from wled import Device as WLEDDevice, WLEDConnectionError, WLEDError
+from wled import Color, Device as WLEDDevice, WLEDConnectionError, WLEDError
 
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
@@ -438,3 +438,36 @@ async def test_main_light_group_updates_when_segments_change(
     # Back to 1 segment: group should contain only segment 0 again
     assert (state := hass.states.get("light.wled_rgb_light_main"))
     assert state.attributes[ATTR_GROUP_ENTITIES] == ["light.wled_rgb_light"]
+
+@pytest.mark.parametrize("device_fixture", ["cct"])
+async def test_cct_light_reflects_active_color_mode(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    mock_wled: MagicMock,
+) -> None:
+    """Test that an RGB+CCT segment reports the color mode of its active color.
+
+    Regression test for #123614: a color set on an analog RGB+CCT strip must be
+    reflected in Home Assistant instead of the entity staying frozen on color_temp.
+    """
+    device = mock_wled.update.return_value
+
+    # A color is active on the segment (RGB non-zero) -> report RGBW and expose it
+    device.state.segments[0].color = Color(primary=(255, 0, 0, 0))
+    freezer.tick(SCAN_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    assert (state := hass.states.get("light.wled_cct_light"))
+    assert state.attributes.get(ATTR_COLOR_MODE) == ColorMode.RGBW
+    assert state.attributes.get(ATTR_RGBW_COLOR) == (255, 0, 0, 0)
+
+    # Only white / CCT active (RGB all zero) -> report COLOR_TEMP again
+    device.state.segments[0].color = Color(primary=(0, 0, 0, 200))
+    freezer.tick(SCAN_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    assert (state := hass.states.get("light.wled_cct_light"))
+    assert state.attributes.get(ATTR_COLOR_MODE) == ColorMode.COLOR_TEMP
+    assert state.attributes.get(ATTR_RGBW_COLOR) is None
